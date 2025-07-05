@@ -5,3 +5,4 @@ folium
 geopy
 aiofiles
 pandas
+google-generativeai
