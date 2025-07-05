@@ -9,17 +9,19 @@ from datetime import datetime
 from geopy.geocoders import Nominatim
 import pandas as pd
 import os
+import asyncio
 import google.generativeai as genai
 
-# -------------------- API Keys --------------------
+# -------------------- Config --------------------
 API_KEY = os.getenv("OWM_API_KEY", "fallback-openweather-key")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "fallback-gemini-key")
 genai.configure(api_key=GEMINI_KEY)
 gemini_model = genai.GenerativeModel(model_name="gemini-1.5-flash")
 
-# -------------------- Setup --------------------
-app = FastAPI()
 HEATMAP_FILE = "aqi_heatmap.html"
+
+# -------------------- App Init --------------------
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,7 +30,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# -------------------- Utility Functions --------------------
+# -------------------- Helper Functions --------------------
 def get_coordinates(place):
     try:
         geolocator = Nominatim(user_agent="aqi_app")
@@ -67,48 +69,62 @@ def generate_health_advice(city: str, aqi_val: int):
         return "AQI data available. Consider staying indoors if sensitive."
 
 def generate_heatmap():
-    with open("States and Districts.json", "r", encoding="utf-8") as f:
-        states_data = json.load(f)
-    districts = [d["name"] for s in states_data for d in s["districts"]]
-    map_center = get_coordinates("India")
-    m = folium.Map(location=map_center, zoom_start=5, tiles="CartoDB positron")
+    try:
+        with open("States and Districts.json", "r", encoding="utf-8") as f:
+            states_data = json.load(f)
+        districts = [d["name"] for s in states_data for d in s["districts"]]
+        map_center = get_coordinates("India")
+        m = folium.Map(location=map_center, zoom_start=5, tiles="CartoDB positron")
 
-    for district in districts:
-        coords = get_coordinates(district)
-        if coords:
-            lat, lon = coords
-            aqi = get_aqi(lat, lon)
-            if aqi:
-                color = get_color(aqi)
-                folium.CircleMarker(
-                    location=[lat, lon],
-                    radius=6,
-                    popup=f"{district} — AQI: {aqi}",
-                    color=color,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=0.7
-                ).add_to(m)
-            time.sleep(1)
+        for district in districts:
+            coords = get_coordinates(district)
+            if coords:
+                lat, lon = coords
+                aqi = get_aqi(lat, lon)
+                if aqi:
+                    color = get_color(aqi)
+                    folium.CircleMarker(
+                        location=[lat, lon],
+                        radius=6,
+                        popup=f"{district} — AQI: {aqi}",
+                        color=color,
+                        fill=True,
+                        fill_color=color,
+                        fill_opacity=0.7
+                    ).add_to(m)
+                time.sleep(1)
 
-    legend = """
-    <div style="position: fixed; bottom: 30px; left: 30px; width: 150px;
-    border:2px solid grey; background-color:white; padding:10px; z-index:9999;">
-    <b>AQI Legend</b><br>
-    <span style='background-color:green'>&nbsp;&nbsp;&nbsp;</span> Good (1)<br>
-    <span style='background-color:yellow'>&nbsp;&nbsp;&nbsp;</span> Fair (2)<br>
-    <span style='background-color:orange'>&nbsp;&nbsp;&nbsp;</span> Moderate (3)<br>
-    <span style='background-color:red'>&nbsp;&nbsp;&nbsp;</span> Poor (4)<br>
-    <span style='background-color:purple'>&nbsp;&nbsp;&nbsp;</span> Very Poor (5)
-    </div>
-    """
-    m.get_root().html.add_child(folium.Element(legend))
-    m.save(HEATMAP_FILE)
+        legend = """
+        <div style="position: fixed; bottom: 30px; left: 30px; width: 150px;
+        border:2px solid grey; background-color:white; padding:10px; z-index:9999;">
+        <b>AQI Legend</b><br>
+        <span style='background-color:green'>&nbsp;&nbsp;&nbsp;</span> Good (1)<br>
+        <span style='background-color:yellow'>&nbsp;&nbsp;&nbsp;</span> Fair (2)<br>
+        <span style='background-color:orange'>&nbsp;&nbsp;&nbsp;</span> Moderate (3)<br>
+        <span style='background-color:red'>&nbsp;&nbsp;&nbsp;</span> Poor (4)<br>
+        <span style='background-color:purple'>&nbsp;&nbsp;&nbsp;</span> Very Poor (5)
+        </div>
+        """
+        m.get_root().html.add_child(folium.Element(legend))
+        m.save(HEATMAP_FILE)
+        print("✅ Heatmap generated")
+    except Exception as e:
+        print("❌ Heatmap generation failed:", e)
+
+# -------------------- Auto Refresh on Startup --------------------
+@app.on_event("startup")
+async def refresh_heatmap_every_hour():
+    async def update_loop():
+        while True:
+            print("🔄 Auto-refreshing heatmap...")
+            generate_heatmap()
+            await asyncio.sleep(3600)  # every hour
+    asyncio.create_task(update_loop())
 
 # -------------------- Routes --------------------
 @app.get("/")
 def root():
-    return {"message": "AQI backend is running 🚀"}
+    return {"message": "AQI backend is running ✅"}
 
 @app.get("/heatmap")
 def serve_heatmap():
@@ -153,7 +169,7 @@ def get_aqi_json(city: str = Query(...)):
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
-# -------------------- Render Entry --------------------
+# -------------------- Render Entrypoint --------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=10000)
